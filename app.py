@@ -59,14 +59,14 @@ IPHONE_PRICE_RANGES = {
     "17 Pro Max": {"min": 4500, "max": 5200},
 }
 
-# Domyślna konfiguracja
+# Domyślna konfiguracja - BEZ FILTRÓW
 CONFIG = {
     "active_models": list(IPHONE_PRICE_RANGES.keys()),
-    "keywords": ["Stan bardzo dobry", "Stan idealny"],
-    "blocked_keywords": ["uszkodzony", "tylko części", "blokada", "uszkodzone", "nie działa"],
+    "keywords": [],  # PUSTE - szuka wszystkich
+    "blocked_keywords": [],  # PUSTE - też uszkodzone
     "url": "https://www.olx.pl/elektronika/telefony/iphone/q-iphone/",
     "active": True,
-    "max_ad_age_hours": 12
+    "max_ad_age_hours": 8760  # 1 rok - praktycznie bez limitu
 }
 
 # Plik do zapisu seen_ads
@@ -150,11 +150,6 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="form-group">
-            <label>Maksymalny wiek ogłoszenia (godziny):</label>
-            <input type="number" name="max_ad_age_hours" value="{{ config.max_ad_age_hours }}" min="1" max="24">
-        </div>
-
-        <div class="form-group">
             <label>
                 <input type="checkbox" name="active" {% if config.active %}checked{% endif %}>
                 🟢 Aktywny monitoring
@@ -170,7 +165,6 @@ HTML_TEMPLATE = """
         <p>⏰ <strong>Sprawdzanie co:</strong> {{ CHECK_INTERVAL }} sekund</p>
         <p>📨 <strong>Webhook Discord:</strong> {% if DISCORD_WEBHOOK %}✅ Skonfigurowany{% else %}❌ Brak{% endif %}</p>
         <p>👀 <strong>Śledzone ogłoszenia:</strong> {{ seen_ads|length }}</p>
-        <p>🕒 <strong>Maksymalny wiek ogłoszeń:</strong> {{ config.max_ad_age_hours }} godzin</p>
         <p>📱 <strong>Aktywne modele:</strong> {{ config.active_models|length }}/{{ price_ranges|length }}</p>
     </div>
 </body>
@@ -270,13 +264,9 @@ def parse_olx_time(time_text):
     
     return None
 
-def is_within_time_limit(ad_time, max_hours=12):
-    """Sprawdza czy ogłoszenie jest w limicie czasowym"""
-    if not ad_time:
-        return False
-    
-    time_diff = datetime.now() - ad_time
-    return time_diff.total_seconds() <= (max_hours * 3600)
+def is_within_time_limit(ad_time, max_hours=8760):
+    """Sprawdza czy ogłoszenie jest w limicie czasowym - teraz praktycznie bez limitu"""
+    return True  # Zawsze zwraca True - brak limitu czasu
 
 def check_filters(title, price, model):
     """Sprawdza wszystkie filtry"""
@@ -294,12 +284,12 @@ def check_filters(title, price, model):
     if price < price_range['min'] or price > price_range['max']:
         return False
     
-    # Wymagane słowa kluczowe
+    # Wymagane słowa kluczowe - teraz puste, więc zawsze przechodzi
     if CONFIG['keywords']:
         if not any(keyword.lower() in title_lower for keyword in CONFIG['keywords']):
             return False
     
-    # Zablokowane słowa
+    # Zablokowane słowa - teraz puste, więc zawsze przechodzi
     if CONFIG['blocked_keywords']:
         if any(blocked.lower() in title_lower for blocked in CONFIG['blocked_keywords']):
             return False
@@ -356,7 +346,7 @@ def check_olx():
                 time_text = location_elem.get_text().strip() if location_elem else ""
                 ad_time = parse_olx_time(time_text)
                 
-                # Sprawdź czy ogłoszenie jest świeże (max 12h)
+                # Sprawdź czy ogłoszenie jest świeże (max 8760h = 1 rok - praktycznie bez limitu)
                 if not is_within_time_limit(ad_time, CONFIG['max_ad_age_hours']):
                     continue
                 
@@ -441,7 +431,7 @@ def update_config():
         blocked = request.form.get('blocked_keywords', '')
         CONFIG['blocked_keywords'] = [k.strip() for k in blocked.split(',') if k.strip()]
         
-        CONFIG['max_ad_age_hours'] = int(request.form.get('max_ad_age_hours', 12))
+        CONFIG['max_ad_age_hours'] = int(request.form.get('max_ad_age_hours', 8760))
         CONFIG['active'] = 'active' in request.form
         
         message = "✅ Konfiguracja zapisana! Bot działa."
