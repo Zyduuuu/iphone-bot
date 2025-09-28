@@ -4,6 +4,7 @@ import time
 import re
 import json
 import logging
+import random
 from datetime import datetime, timedelta
 from flask import Flask, request, render_template_string
 from threading import Thread
@@ -15,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Konfiguracja z environment variables
 DISCORD_WEBHOOK = os.getenv('DISCORD_WEBHOOK', '')
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '180'))  # 3 minuty zamiast 60 sekund
+BASE_CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '180'))  # 3 minuty bazowo
 
 # Cennik iPhone'ów
 IPHONE_PRICE_RANGES = {
@@ -73,6 +74,19 @@ CONFIG = {
 # Plik do zapisu seen_ads
 SEEN_ADS_FILE = "seen_ads.json"
 
+# Nowe zmienne dla alertów i statusów
+class MonitorState:
+    def __init__(self):
+        self.last_found_time = datetime.now()
+        self.last_status_time = datetime.now()
+        self.consecutive_zero_count = 0
+        
+monitor_state = MonitorState()
+
+def get_random_delay():
+    """Losowe opóźnienie od 2 do 7 minut"""
+    return random.randint(120, 420)  # 2-7 minut w sekundach
+
 def load_seen_ads():
     """Ładuje zapisane ogłoszenia z pliku"""
     if os.path.exists(SEEN_ADS_FILE):
@@ -93,7 +107,72 @@ def save_seen_ads():
 
 seen_ads = load_seen_ads()
 
-# HTML panelu konfiguracyjnego
+def send_discord_alert(message):
+    """Wysyła alert na Discord"""
+    if not DISCORD_WEBHOOK:
+        logging.error("❌ Brak skonfigurowanego webhooka Discord!")
+        return
+
+    embed = {
+        "title": "🚨 ALERT SYSTEMU",
+        "description": message,
+        "color": 0xff0000,
+        "timestamp": datetime.now().isoformat(),
+        "footer": {"text": "OLX iPhone Hunter PRO • System Alert"}
+    }
+    
+    try:
+        response = requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]}, timeout=10)
+        if response.status_code == 204:
+            logging.info("✅ Wysłano alert systemowy na Discord")
+        else:
+            logging.error(f"❌ Błąd Discorda: {response.status_code}")
+    except Exception as e:
+        logging.error(f"❌ Błąd wysyłania alertu: {e}")
+
+def send_discord_status():
+    """Wysyła status co godzinę na Discord"""
+    if not DISCORD_WEBHOOK:
+        return
+
+    embed = {
+        "title": "📊 STATUS SYSTEMU",
+        "description": "🤖 Bot ciągle szuka nowych ogłoszeń iPhone na OLX i działa poprawnie!",
+        "color": 0x00ff00,
+        "fields": [
+            {"name": "🕒 Ostatnie znalezione", "value": f"{monitor_state.last_found_time.strftime('%Y-%m-%d %H:%M:%S')}", "inline": True},
+            {"name": "📱 Aktywne modele", "value": f"{len(CONFIG['active_models'])}", "inline": True},
+            {"name": "👀 Śledzone oferty", "value": f"{len(seen_ads)}", "inline": True}
+        ],
+        "timestamp": datetime.now().isoformat(),
+        "footer": {"text": "OLX iPhone Hunter PRO • Hourly Status"}
+    }
+    
+    try:
+        response = requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]}, timeout=10)
+        if response.status_code == 204:
+            logging.info("✅ Wysłano status godzinny na Discord")
+        else:
+            logging.error(f"❌ Błąd statusu Discorda: {response.status_code}")
+    except Exception as e:
+        logging.error(f"❌ Błąd wysyłania statusu: {e}")
+
+def check_8_hours_alert():
+    """Sprawdza czy minęło 8 godzin bez znalezienia ogłoszeń"""
+    time_without_results = datetime.now() - monitor_state.last_found_time
+    if time_without_results.total_seconds() >= 8 * 3600:  # 8 godzin
+        alert_msg = f"⚠️ **BRAK NOWYCH OGŁOSZEŃ OD 8 GODZIN!**\n\nOstatnie znalezione ogłoszenie: {monitor_state.last_found_time.strftime('%Y-%m-%d %H:%M:%S')}\nSprawdzane modele: {len(CONFIG['active_models'])}\nŚledzone oferty: {len(seen_ads)}"
+        send_discord_alert(alert_msg)
+        monitor_state.last_found_time = datetime.now()  # reset
+
+def check_hourly_status():
+    """Sprawdza czy wysłać status co godzinę"""
+    time_since_last_status = datetime.now() - monitor_state.last_status_time
+    if time_since_last_status.total_seconds() >= 3600:  # 1 godzina
+        send_discord_status()
+        monitor_state.last_status_time = datetime.now()
+
+# HTML panelu konfiguracyjnego (bez zmian - ten sam template)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -114,14 +193,14 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <h1>📱 OLX iPhone Hunter PRO v2</h1>
+    <h1>📱 OLX iPhone Hunter PRO v3</h1>
     
     {% if message %}
     <div class="status success">{{ message }}</div>
     {% endif %}
     
     <div class="status info">
-        <strong>🎯 Ulepszony bot:</strong> Paginacja OLX + Lepsze rozpoznawanie modeli + Interwał 3 minuty
+        <strong>🎯 Ulepszony bot v3:</strong> Losowe opóźnienia 2-7min + Alerty 8h + Status co 1h
     </div>
     
     <form method="POST" action="/config">
@@ -166,13 +245,16 @@ HTML_TEMPLATE = """
     </form>
 
     <div style="margin-top: 30px; padding: 20px; background: #f8f9fa; border-radius: 5px;">
-        <h3>📊 Status systemu:</h3>
+        <h3>📊 Status systemu v3:</h3>
         <p>🟢 <strong>Aktywny:</strong> {% if config.active %}TAK{% else %}NIE{% endif %}</p>
-        <p>⏰ <strong>Sprawdzanie co:</strong> {{ CHECK_INTERVAL }} sekund</p>
+        <p>⏰ <strong>Interwał skanów:</strong> 2-7 minut (losowy)</p>
         <p>📨 <strong>Webhook Discord:</strong> {% if DISCORD_WEBHOOK %}✅ Skonfigurowany{% else %}❌ Brak{% endif %}</p>
         <p>👀 <strong>Śledzone ogłoszenia:</strong> {{ seen_ads|length }}</p>
         <p>📄 <strong>Sprawdzane strony OLX:</strong> {{ config.max_pages }}</p>
         <p>📱 <strong>Aktywne modele:</strong> {{ config.active_models|length }}/{{ price_ranges|length }}</p>
+        <p>🕒 <strong>Ostatnie znalezione:</strong> {{ monitor_state.last_found_time.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+        <p>⚠️ <strong>Alert po braku:</strong> 8 godzin</p>
+        <p>📊 <strong>Status co:</strong> 1 godzinę</p>
     </div>
 </body>
 </html>
@@ -197,7 +279,7 @@ def send_discord_notification(ad):
             {"name": "🎯 Zakres cenowy", "value": f"{ad['price_range']['min']}-{ad['price_range']['max']} zł", "inline": True}
         ],
         "thumbnail": {"url": ad['image']},
-        "footer": {"text": f"OLX iPhone Hunter v2 • {ad['time_ago']}"}
+        "footer": {"text": f"OLX iPhone Hunter v3 • {ad['time_ago']}"}
     }
     
     try:
@@ -419,22 +501,42 @@ def check_olx():
     return all_new_ads
 
 def monitoring_loop():
-    """Główna pętla monitorowania"""
-    logging.info("🟢 Uruchomiono monitoring OLX v2 - Paginacja + Lepsze filtry + 3min interwał")
+    """Główna pętla monitorowania 24/7"""
+    logging.info("🟢 Uruchomiono monitoring OLX v3 - Losowe opóźnienia 2-7min + Alerty 8h + Status co 1h")
+    
     while True:
         try:
             if CONFIG['active'] and DISCORD_WEBHOOK:
                 ads = check_olx()
-                for ad in ads:
-                    send_discord_notification(ad)
                 
-                # Zapisz seen_ads co każde sprawdzenie
                 if ads:
-                    save_seen_ads()
+                    for ad in ads:
+                        send_discord_notification(ad)
+                    monitor_state.last_found_time = datetime.now()
+                    monitor_state.consecutive_zero_count = 0
                     
-            time.sleep(CHECK_INTERVAL)  # Teraz 3 minuty (180 sekund)
+                    # Zapisz seen_ads po znalezieniu nowych ogłoszeń
+                    save_seen_ads()
+                else:
+                    monitor_state.consecutive_zero_count += 1
+                
+                # Sprawdź alerty i statusy
+                check_8_hours_alert()
+                check_hourly_status()
+                
+            # LOSOWE OPÓŹNIENIE 2-7 minut
+            delay = get_random_delay()
+            minutes = delay // 60
+            seconds = delay % 60
+            logging.info(f"⏰ Losowe opóźnienie: {minutes}min {seconds}s przed następnym skanem...")
+            
+            # Oczekiwanie z możliwością przerwania co sekundę
+            for i in range(delay):
+                time.sleep(1)
+                    
         except Exception as e:
             logging.error(f"❌ Błąd pętli: {e}")
+            # Krótsze oczekiwanie przy błędzie
             time.sleep(60)
 
 # Strona główna - panel konfiguracyjny
@@ -444,7 +546,7 @@ def dashboard():
                                 config=CONFIG, 
                                 price_ranges=IPHONE_PRICE_RANGES,
                                 seen_ads=seen_ads,
-                                CHECK_INTERVAL=CHECK_INTERVAL,
+                                monitor_state=monitor_state,
                                 DISCORD_WEBHOOK=DISCORD_WEBHOOK)
 
 @app.route('/config', methods=['POST'])
@@ -467,8 +569,8 @@ def update_config():
         CONFIG['max_pages'] = int(request.form.get('max_pages', 5))
         CONFIG['active'] = 'active' in request.form
         
-        message = "✅ Konfiguracja zapisana! Bot v2 działa."
-        logging.info(f"🔧 Zaktualizowano konfigurację v2")
+        message = "✅ Konfiguracja zapisana! Bot v3 działa z losowymi opóźnieniami 2-7min."
+        logging.info(f"🔧 Zaktualizowano konfigurację v3")
         
     except Exception as e:
         message = f"❌ Błąd: {e}"
@@ -479,7 +581,7 @@ def update_config():
                                 price_ranges=IPHONE_PRICE_RANGES,
                                 message=message,
                                 seen_ads=seen_ads,
-                                CHECK_INTERVAL=CHECK_INTERVAL,
+                                monitor_state=monitor_state,
                                 DISCORD_WEBHOOK=DISCORD_WEBHOOK)
 
 # Uruchomienie aplikacji
@@ -491,4 +593,5 @@ if __name__ == '__main__':
     
     # Uruchom serwer Flask
     port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    logging.info(f"🌐 Serwer web uruchomiony na porcie {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
