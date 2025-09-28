@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # Konfiguracja z environment variables
 DISCORD_WEBHOOK = os.getenv('DISCORD_WEBHOOK', '')
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))
+CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '180'))  # 3 minuty zamiast 60 sekund
 
 # Cennik iPhone'ów
 IPHONE_PRICE_RANGES = {
@@ -66,7 +66,8 @@ CONFIG = {
     "blocked_keywords": [],  # PUSTE - też uszkodzone
     "url": "https://www.olx.pl/elektronika/telefony/iphone/q-iphone/",
     "active": True,
-    "max_ad_age_hours": 8760  # 1 rok - praktycznie bez limitu
+    "max_ad_age_hours": 8760,  # 1 rok - praktycznie bez limitu
+    "max_pages": 5  # Nowe: maksymalna liczba stron do sprawdzenia
 }
 
 # Plik do zapisu seen_ads
@@ -113,14 +114,14 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <h1>📱 OLX iPhone Hunter PRO</h1>
+    <h1>📱 OLX iPhone Hunter PRO v2</h1>
     
     {% if message %}
     <div class="status success">{{ message }}</div>
     {% endif %}
     
     <div class="status info">
-        <strong>🎯 Aktywny cennik:</strong> Bot szuka iPhone'ów według precyzyjnych zakresów cenowych dla każdego modelu
+        <strong>🎯 Ulepszony bot:</strong> Paginacja OLX + Lepsze rozpoznawanie modeli + Interwał 3 minuty
     </div>
     
     <form method="POST" action="/config">
@@ -150,6 +151,11 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="form-group">
+            <label>Maksymalna liczba stron OLX do sprawdzenia:</label>
+            <input type="number" name="max_pages" value="{{ config.max_pages }}" min="1" max="10">
+        </div>
+
+        <div class="form-group">
             <label>
                 <input type="checkbox" name="active" {% if config.active %}checked{% endif %}>
                 🟢 Aktywny monitoring
@@ -165,6 +171,7 @@ HTML_TEMPLATE = """
         <p>⏰ <strong>Sprawdzanie co:</strong> {{ CHECK_INTERVAL }} sekund</p>
         <p>📨 <strong>Webhook Discord:</strong> {% if DISCORD_WEBHOOK %}✅ Skonfigurowany{% else %}❌ Brak{% endif %}</p>
         <p>👀 <strong>Śledzone ogłoszenia:</strong> {{ seen_ads|length }}</p>
+        <p>📄 <strong>Sprawdzane strony OLX:</strong> {{ config.max_pages }}</p>
         <p>📱 <strong>Aktywne modele:</strong> {{ config.active_models|length }}/{{ price_ranges|length }}</p>
     </div>
 </body>
@@ -190,7 +197,7 @@ def send_discord_notification(ad):
             {"name": "🎯 Zakres cenowy", "value": f"{ad['price_range']['min']}-{ad['price_range']['max']} zł", "inline": True}
         ],
         "thumbnail": {"url": ad['image']},
-        "footer": {"text": f"OLX iPhone Hunter • {ad['time_ago']}"}
+        "footer": {"text": f"OLX iPhone Hunter v2 • {ad['time_ago']}"}
     }
     
     try:
@@ -213,23 +220,27 @@ def extract_price(price_text):
         return None
 
 def extract_model_and_variant(title):
-    """Rozpoznaje model iPhone i wariant z tytułu"""
+    """Rozpoznaje model iPhone i wariant z tytułu - ULEPSZONE!"""
     title_lower = title.lower()
     
-    # Szukamy modelu i wariantu
+    # ULEPSZONE: Więcej wzorców i lepsze dopasowanie
     patterns = [
-        (r"iphone\s*(\d+)\s*(pro max|pro max|promax)", " Pro Max"),
-        (r"iphone\s*(\d+)\s*(pro|pro)", " Pro"),
-        (r"iphone\s*(\d+)\s*(mini|mini)", " mini"),
-        (r"iphone\s*(\d+)\s*(plus|plus)", " Plus"),
-        (r"iphone\s*(\d+)", "")  # Podstawowy model
+        (r"iphone[\s\-]*(\d+)[\s\-]*(pro max|pro[\s\-]*max|promax)", " Pro Max"),
+        (r"iphone[\s\-]*(\d+)[\s\-]*(pro|pro)", " Pro"),
+        (r"iphone[\s\-]*(\d+)[\s\-]*(mini|mini)", " mini"),
+        (r"iphone[\s\-]*(\d+)[\s\-]*(plus|plus)", " Plus"),
+        (r"iphone[\s\-]*(\d+)", ""),  # Podstawowy model
+        (r"i[\s\-]*phone[\s\-]*(\d+)", ""),  # Dla "i phone 11"
+        (r"iphone[\s\-]*(\d+)[\s\-]*max", " Pro Max"),  # Dla "iphone 11 max"
     ]
     
     for pattern, variant in patterns:
         match = re.search(pattern, title_lower, re.IGNORECASE)
         if match:
             model = match.group(1)
-            return f"{model}{variant}"
+            # Sprawdź czy to poprawny model (11-17)
+            if model.isdigit() and 11 <= int(model) <= 17:
+                return f"{model}{variant}"
     
     return None
 
@@ -296,16 +307,13 @@ def check_filters(title, price, model):
     
     return True
 
-def check_olx():
-    """Główna funkcja sprawdzania OLX"""
-    if not CONFIG['active']:
-        return []
-
+def check_olx_page(page_url):
+    """Sprawdza pojedynczą stronę OLX"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15'
         }
-        response = requests.get(CONFIG['url'], headers=headers, timeout=30)
+        response = requests.get(page_url, headers=headers, timeout=30)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         new_ads = []
@@ -338,7 +346,7 @@ def check_olx():
                 price_elem = ad.find("p", {"data-testid": "ad-price"})
                 price = extract_price(price_elem.get_text() if price_elem else "")
                 
-                # Model i wariant
+                # Model i wariant - ULEPSZONE ROZPOZNAWANIE
                 model = extract_model_and_variant(title)
                 
                 # Czas ogłoszenia
@@ -346,7 +354,7 @@ def check_olx():
                 time_text = location_elem.get_text().strip() if location_elem else ""
                 ad_time = parse_olx_time(time_text)
                 
-                # Sprawdź czy ogłoszenie jest świeże (max 8760h = 1 rok - praktycznie bez limitu)
+                # Sprawdź czy ogłoszenie jest świeże
                 if not is_within_time_limit(ad_time, CONFIG['max_ad_age_hours']):
                     continue
                 
@@ -383,12 +391,36 @@ def check_olx():
         return new_ads
         
     except Exception as e:
-        logging.error(f"❌ Błąd OLX: {e}")
+        logging.error(f"❌ Błąd OLX (strona {page_url}): {e}")
         return []
+
+def check_olx():
+    """Główna funkcja sprawdzania OLX - TERAZ Z PAGINACJĄ!"""
+    if not CONFIG['active']:
+        return []
+
+    all_new_ads = []
+    
+    # Sprawdź WSZYSTKIE strony (paginacja)
+    for page in range(1, CONFIG['max_pages'] + 1):
+        if page == 1:
+            page_url = CONFIG['url']
+        else:
+            page_url = f"{CONFIG['url']}?page={page}"
+        
+        logging.info(f"🔍 Sprawdzam stronę OLX: {page}")
+        page_ads = check_olx_page(page_url)
+        all_new_ads.extend(page_ads)
+        
+        # Małe opóźnienie między stronami żeby nie zablokować
+        time.sleep(1)
+    
+    logging.info(f"📊 Znaleziono {len(all_new_ads)} nowych ogłoszeń z {CONFIG['max_pages']} stron")
+    return all_new_ads
 
 def monitoring_loop():
     """Główna pętla monitorowania"""
-    logging.info("🟢 Uruchomiono monitoring OLX z zaawansowanymi filtrami")
+    logging.info("🟢 Uruchomiono monitoring OLX v2 - Paginacja + Lepsze filtry + 3min interwał")
     while True:
         try:
             if CONFIG['active'] and DISCORD_WEBHOOK:
@@ -400,7 +432,7 @@ def monitoring_loop():
                 if ads:
                     save_seen_ads()
                     
-            time.sleep(CHECK_INTERVAL)
+            time.sleep(CHECK_INTERVAL)  # Teraz 3 minuty (180 sekund)
         except Exception as e:
             logging.error(f"❌ Błąd pętli: {e}")
             time.sleep(60)
@@ -432,10 +464,11 @@ def update_config():
         CONFIG['blocked_keywords'] = [k.strip() for k in blocked.split(',') if k.strip()]
         
         CONFIG['max_ad_age_hours'] = int(request.form.get('max_ad_age_hours', 8760))
+        CONFIG['max_pages'] = int(request.form.get('max_pages', 5))
         CONFIG['active'] = 'active' in request.form
         
-        message = "✅ Konfiguracja zapisana! Bot działa."
-        logging.info(f"🔧 Zaktualizowano konfigurację")
+        message = "✅ Konfiguracja zapisana! Bot v2 działa."
+        logging.info(f"🔧 Zaktualizowano konfigurację v2")
         
     except Exception as e:
         message = f"❌ Błąd: {e}"
