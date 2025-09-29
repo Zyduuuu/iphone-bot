@@ -52,7 +52,7 @@ CONFIG = {
     "active_models": list(IPHONE_PRICE_RANGES.keys()), 
     "keywords": [], 
     "blocked_keywords": ["uszkodzony", "blokada", "część", "części", "tylko części"], 
-    "url": "https://www.olx.pl/elektronika/telefony/q-iphone/",  # ← ZMIENIONE NA TWÓJ LINK
+    "url": "https://www.olx.pl/elektronika/telefony/q-iphone/",
     "active": True, 
     "max_ad_age_hours": 8760, 
     "max_pages": 50, 
@@ -612,4 +612,29 @@ HTML_TEMPLATE = """
         <p>📨 <strong>Webhook Discord:</strong> {% if DISCORD_WEBHOOK %}✅ Skonfigurowany{% else %}❌ Brak{% endif %}</p> 
         <p>👀 <strong>Śledzone ogłoszenia:</strong> {{ seen_ads_count }}</p> 
         <p>📄 <strong>Sprawdzane strony OLX:</strong> {{ config.max_pages }}</p> 
-        <p>📱 <strong>Aktywne modele:</strong> {{ config.active_models|length }}/{{ price_ranges|length }}</p>
+        <p>📱 <strong>Aktywne modele:</strong> {{ config.active_models|length }}/{{ price_ranges|length }}</p> 
+        <p>🕒 <strong>Ostatnie znalezione:</strong> {{ last_found_time }}</p> 
+        <p>🔧 <strong>Pokazuj uszkodzone:</strong> {% if config.include_damaged %}TAK{% else %}NIE{% endif %}</p> 
+        <p>🕰️ <strong>Pomiń limit wieku:</strong> {% if config.ignore_age_limit %}TAK{% else %}NIE{% endif %}</p> 
+    </div> 
+</body> 
+</html> 
+""" 
+
+@app.route('/') 
+def dashboard(): 
+    with monitor_state.lock: 
+        last_found = monitor_state.last_found_time.strftime('%Y-%m-%d %H:%M:%S') 
+        seen_ads_count = len(seen_ads) 
+    return render_template_string(HTML_TEMPLATE, config=CONFIG, price_ranges=IPHONE_PRICE_RANGES, seen_ads_count=seen_ads_count, last_found_time=last_found, DISCORD_WEBHOOK=DISCORD_WEBHOOK) 
+
+@app.route('/config', methods=['POST']) 
+def update_config(): 
+    """Aktualizuje konfigurację przez formularz web""" 
+    global CONFIG 
+    try: 
+        with config_lock: 
+            CONFIG['active_models'] = request.form.getlist('active_models') or [] 
+            keywords = request.form.get('keywords', '') 
+            CONFIG['keywords'] = [k.strip() for k in keywords.split(',') if k.strip()] 
+            blocked = request.form.get('blocked
