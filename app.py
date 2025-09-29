@@ -659,11 +659,16 @@ def update_config():
     return render_template_string(HTML_TEMPLATE, config=CONFIG, price_ranges=IPHONE_PRICE_RANGES, message=message, seen_ads_count=seen_ads_count, last_found_time=last_found, DISCORD_WEBHOOK=DISCORD_WEBHOOK)
 
 # ========== URUCHOMIENIE ==========
-if __name__ == '__main__':
-    load_seen_ads()
+def start_monitoring():
+    """Uruchamia wątek monitorujący"""
     monitor_thread = Thread(target=monitoring_loop)
     monitor_thread.daemon = True
     monitor_thread.start()
-    port = int(os.getenv('PORT', 5000))
+    logging.info("🟢 Wątek monitorowania uruchomiony")
+
+if __name__ == '__main__':
+    load_seen_ads()
+    start_monitoring()
+    port = int(os.getenv('PORT', 10000))
     logging.info(f"🌐 Serwer web uruchomiony na porcie {port}")
-    app
+    app.run(host='0.0.0.0', port=port, debug=False
